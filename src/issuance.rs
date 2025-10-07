@@ -20,14 +20,14 @@ pub fn issuance_homomorphism(
 }
 
 pub fn compute_c_m(m_1: Scalar, m_2: Scalar, m_3: Scalar, r_m: Scalar) -> G1Projective {
-    m_1 * crate::generators::gen_ecash_h_1()
-        + m_2 * crate::generators::gen_ecash_h_2()
-        + m_3 * crate::generators::gen_ecash_h_3()
-        + r_m * crate::generators::gen_ecash_g_1()
+    m_1 * crate::generators::ecash_h1()
+        + m_2 * crate::generators::ecash_h2()
+        + m_3 * crate::generators::ecash_h3()
+        + r_m * crate::generators::ecash_g1()
 }
 
 pub fn compute_c_k(m: Scalar, r: Scalar, h: G1Projective) -> G1Projective {
-    m * h + r * crate::generators::gen_ecash_g_1()
+    m * h + r * crate::generators::ecash_g1()
 }
 
 pub fn prove_issuance(

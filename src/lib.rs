@@ -209,7 +209,7 @@ impl Spend {
 }
 
 fn compute_pc(m: Scalar, r: Scalar) -> G1Projective {
-    m * generators::gen_pedersen_g() + r * generators::gen_pedersen_h()
+    m * generators::pedersen_g() + r * generators::pedersen_h()
 }
 
 fn compute_blinding_factor(
@@ -241,7 +241,7 @@ fn compute_message(pk: &[G2Projective; 4], m_1: Scalar, m_2: Scalar, m_3: Scalar
 
 fn verify(message: G2Projective, h: G1Projective, s: G1Projective) -> bool {
     let p_m = pairing(&h.to_affine(), &message.to_affine());
-    let p_s = pairing(&s.to_affine(), &generators::gen_ecash_g_2().to_affine());
+    let p_s = pairing(&s.to_affine(), &generators::ecash_g2().to_affine());
 
     p_m == p_s
 }
@@ -274,7 +274,7 @@ fn lagrange_multipliers(scalars: Vec<Scalar>) -> Vec<Scalar> {
 #[cfg(test)]
 mod tests {
     use crate::aggregate_signature_shares;
-    use crate::generators::{gen_ecash_g_1, gen_ecash_g_2};
+    use crate::generators::{ecash_g1, ecash_g2};
     use bitcoin_hashes::sha256;
     use bitcoin_hashes::Hash;
     use bls12_381::Scalar;
@@ -297,11 +297,11 @@ mod tests {
 
         let g1 = polys
             .clone()
-            .map(|p| gen_ecash_g_1() * evaluate(&p, &Scalar::zero()));
+            .map(|p| ecash_g1() * evaluate(&p, &Scalar::zero()));
 
         let g2 = polys
             .clone()
-            .map(|p| gen_ecash_g_2() * evaluate(&p, &Scalar::zero()));
+            .map(|p| ecash_g2() * evaluate(&p, &Scalar::zero()));
 
         let apk = AggregatePublicKey { g1, g2 };
 
@@ -318,8 +318,8 @@ mod tests {
         let pks = sks
             .iter()
             .map(|sk| PublicKeyShare {
-                g1: sk.0.map(|s| (gen_ecash_g_1() * s)),
-                g2: sk.0.map(|s| (gen_ecash_g_2() * s)),
+                g1: sk.0.map(|s| (ecash_g1() * s)),
+                g2: sk.0.map(|s| (ecash_g2() * s)),
             })
             .collect::<Vec<PublicKeyShare>>();
 
@@ -382,5 +382,38 @@ mod tests {
         let spend = spend_request.prepare_spend(&apk, amount, r_p);
 
         assert!(spend.verify(apk, auth));
+    }
+
+    #[test]
+    fn test_issuance_timing() {
+        use std::time::Instant;
+
+        let amount = 1000;
+        let auth = sha256::Hash::hash("authentication".as_bytes());
+
+        let issuance_request =
+            IssuanceRequest::new(amount, auth, Scalar::random(&mut thread_rng()));
+
+        let issuance = issuance_request.prepare_issuance();
+
+        // Time issuance verify
+        let start = Instant::now();
+        let verify_result = issuance.verify();
+        let verify_duration = start.elapsed();
+        assert!(verify_result);
+        println!("Issuance verify took: {:?}", verify_duration);
+
+        // Generate keys for signing
+        let (_, _, sks) = dealer_keygen(5, 7);
+        let sk = &sks[0];
+
+        // Time issuance sign
+        let start = Instant::now();
+        let signature = issuance.sign(sk);
+        let sign_duration = start.elapsed();
+        println!("Issuance sign took: {:?}", sign_duration);
+
+        // Verify the signature was created
+        assert_ne!(signature.0, bls12_381::G1Projective::identity());
     }
 }
