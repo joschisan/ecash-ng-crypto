@@ -4,11 +4,14 @@ mod hash;
 mod issuance;
 mod spend;
 
+use std::array;
+use std::collections::BTreeMap;
+
+use bitcoin_hashes::sha256;
 use bls12_381::{pairing, G1Projective, G2Projective, Scalar};
 use ff::Field;
 use group::Curve;
 use rand::thread_rng;
-use std::collections::BTreeMap;
 
 use crate::hash::hash_g1_to_g1;
 use crate::hash::map_to_scalar;
@@ -18,8 +21,6 @@ use crate::issuance::verify_issuance;
 use crate::spend::compute_k;
 use crate::spend::prepare_spend;
 use crate::spend::verify_spend;
-
-use bitcoin_hashes::sha256;
 
 pub struct AggregatePublicKey {
     g1: [G1Projective; 4],
@@ -271,83 +272,77 @@ fn lagrange_multipliers(scalars: Vec<Scalar>) -> Vec<Scalar> {
         .collect()
 }
 
+// Helper functions for testing and benchmarking
+fn dealer_keygen(
+    threshold: usize,
+    keys: usize,
+) -> (AggregatePublicKey, Vec<PublicKeyShare>, Vec<SecretKeyShare>) {
+    let polys: [Vec<Scalar>; 4] = array::from_fn(|_| random_polynomial(threshold));
+
+    let g1 = polys
+        .clone()
+        .map(|p| generators::ecash_g1() * evaluate(&p, &Scalar::zero()));
+
+    let g2 = polys
+        .clone()
+        .map(|p| generators::ecash_g2() * evaluate(&p, &Scalar::zero()));
+
+    let apk = AggregatePublicKey { g1, g2 };
+
+    let sks = (0..keys)
+        .map(|idx| {
+            SecretKeyShare(
+                polys
+                    .clone()
+                    .map(|p| evaluate(&p, &Scalar::from(idx as u64 + 1))),
+            )
+        })
+        .collect::<Vec<SecretKeyShare>>();
+
+    let pks = sks
+        .iter()
+        .map(|sk| PublicKeyShare {
+            g1: sk.0.map(|s| (generators::ecash_g1() * s)),
+            g2: sk.0.map(|s| (generators::ecash_g2() * s)),
+        })
+        .collect::<Vec<PublicKeyShare>>();
+
+    (apk, pks, sks)
+}
+
+fn random_polynomial(degree: usize) -> Vec<Scalar> {
+    (0..degree)
+        .map(|_| Scalar::random(&mut thread_rng()))
+        .collect()
+}
+
+fn evaluate(coefficients: &[Scalar], x: &Scalar) -> Scalar {
+    coefficients
+        .iter()
+        .cloned()
+        .rev()
+        .reduce(|acc, coefficient| acc * x + coefficient)
+        .expect("We have at least one coefficient")
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::aggregate_signature_shares;
-    use crate::generators::{ecash_g1, ecash_g2};
     use bitcoin_hashes::sha256;
     use bitcoin_hashes::Hash;
     use bls12_381::Scalar;
     use ff::Field;
     use rand::thread_rng;
-    use std::array;
     use std::collections::BTreeMap;
 
-    use crate::AggregatePublicKey;
-    use crate::IssuanceRequest;
-    use crate::PublicKeyShare;
-    use crate::SecretKeyShare;
-    use crate::SignatureShare;
-
-    fn dealer_keygen(
-        threshold: usize,
-        keys: usize,
-    ) -> (AggregatePublicKey, Vec<PublicKeyShare>, Vec<SecretKeyShare>) {
-        let polys: [Vec<Scalar>; 4] = array::from_fn(|_| random_polynomial(threshold));
-
-        let g1 = polys
-            .clone()
-            .map(|p| ecash_g1() * evaluate(&p, &Scalar::zero()));
-
-        let g2 = polys
-            .clone()
-            .map(|p| ecash_g2() * evaluate(&p, &Scalar::zero()));
-
-        let apk = AggregatePublicKey { g1, g2 };
-
-        let sks = (0..keys)
-            .map(|idx| {
-                SecretKeyShare(
-                    polys
-                        .clone()
-                        .map(|p| evaluate(&p, &Scalar::from(idx as u64 + 1))),
-                )
-            })
-            .collect::<Vec<SecretKeyShare>>();
-
-        let pks = sks
-            .iter()
-            .map(|sk| PublicKeyShare {
-                g1: sk.0.map(|s| (ecash_g1() * s)),
-                g2: sk.0.map(|s| (ecash_g2() * s)),
-            })
-            .collect::<Vec<PublicKeyShare>>();
-
-        (apk, pks, sks)
-    }
-
-    fn random_polynomial(degree: usize) -> Vec<Scalar> {
-        (0..degree)
-            .map(|_| Scalar::random(&mut thread_rng()))
-            .collect()
-    }
-
-    fn evaluate(coefficients: &[Scalar], x: &Scalar) -> Scalar {
-        coefficients
-            .iter()
-            .cloned()
-            .rev()
-            .reduce(|acc, coefficient| acc * x + coefficient)
-            .expect("We have at least one coefficient")
-    }
+    use crate::{aggregate_signature_shares, dealer_keygen, IssuanceRequest, SignatureShare};
 
     #[test]
     fn test_roundtrip() {
-        let amount = 1000;
-        let auth = sha256::Hash::hash("authentication".as_bytes());
-
-        let issuance_request =
-            IssuanceRequest::new(amount, auth, Scalar::random(&mut thread_rng()));
+        let issuance_request = IssuanceRequest::new(
+            1000,
+            sha256::Hash::hash(&[0; 32]),
+            Scalar::random(&mut thread_rng()),
+        );
 
         let issuance = issuance_request.prepare_issuance();
 
@@ -375,45 +370,12 @@ mod tests {
 
         let spend_request = issuance_request.finalize_issuance(&apk, &signature);
 
-        assert!(spend_request.verify(&apk, amount, auth));
+        assert!(spend_request.verify(&apk, 1000, sha256::Hash::hash(&[0; 32])));
 
         let r_p = Scalar::random(&mut thread_rng());
 
-        let spend = spend_request.prepare_spend(&apk, amount, r_p);
+        let spend = spend_request.prepare_spend(&apk, 1000, r_p);
 
-        assert!(spend.verify(apk, auth));
-    }
-
-    #[test]
-    fn test_issuance_timing() {
-        use std::time::Instant;
-
-        let amount = 1000;
-        let auth = sha256::Hash::hash("authentication".as_bytes());
-
-        let issuance_request =
-            IssuanceRequest::new(amount, auth, Scalar::random(&mut thread_rng()));
-
-        let issuance = issuance_request.prepare_issuance();
-
-        // Time issuance verify
-        let start = Instant::now();
-        let verify_result = issuance.verify();
-        let verify_duration = start.elapsed();
-        assert!(verify_result);
-        println!("Issuance verify took: {:?}", verify_duration);
-
-        // Generate keys for signing
-        let (_, _, sks) = dealer_keygen(5, 7);
-        let sk = &sks[0];
-
-        // Time issuance sign
-        let start = Instant::now();
-        let signature = issuance.sign(sk);
-        let sign_duration = start.elapsed();
-        println!("Issuance sign took: {:?}", sign_duration);
-
-        // Verify the signature was created
-        assert_ne!(signature.0, bls12_381::G1Projective::identity());
+        assert!(spend.verify(apk, sha256::Hash::hash(&[0; 32])));
     }
 }
